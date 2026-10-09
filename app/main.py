@@ -27,7 +27,7 @@ except ImportError:
     ImageTk = None
 
 APP_NAME = "Vydora"
-APP_VERSION = "1.4.0"
+APP_VERSION = "1.4.1"
 USER_WATERMARK = "KeshavKumar13"
 GITHUB_URL = "https://github.com/KeshavKumar13/"
 # Self-update source: GitHub Releases of this repository. The release must contain an asset named ASSET_NAME.
@@ -38,6 +38,8 @@ ASSET_NAME = f"{APP_NAME}.exe"
 AD_URL = "https://asiafilm.org/4/d06566d143eeefdd7f3dda37da5a120c"  # Adsterra Smartlink (opened only when the user clicks)
 AD_IMAGE_URL = ""      # optional remote override; local banner is used by default
 AD_TEXT = "Sponsored offer"
+# Top-quality downloads open the sponsor page, but never more often than this:
+SPONSOR_COOLDOWN_MIN = 30
 AD_IMAGE_PATH = Path(getattr(sys, "_MEIPASS", ROOT if "ROOT" in globals() else Path(__file__).resolve().parent)) / "assets" / "sponsored_offer.png"
 LINK_BLUE = "#3ea6ff"
 QUALITY_BEST = "Best available"
@@ -77,7 +79,7 @@ def load_config():
         "auto_browser_retry": False,
         "api_token": secrets.token_urlsafe(32),
         "max_concurrent": 2,
-        "smartlink_download_count": 0,
+        "last_sponsor_open": 0,
     }
     try:
         if CONFIG.exists():
@@ -1009,7 +1011,16 @@ class Dropdown(tk.Frame):
 
     # ---- public API (a small subset of ttk.Combobox) ----
     def set_values(self, values):
-        self._dd_items = [(v[1], True) if isinstance(v, tuple) else (str(v), False) for v in values]
+        items = []
+        for v in values:
+            if isinstance(v, tuple):
+                if v[0] == "header":
+                    items.append((v[1], True, ""))
+                else:                                   # ("item", text, hint)
+                    items.append((v[1], False, v[2] if len(v) > 2 else ""))
+            else:
+                items.append((str(v), False, ""))
+        self._dd_items = items
 
     def get(self):
         return self._dd_var.get()
@@ -1055,6 +1066,9 @@ class Dropdown(tk.Frame):
     def _open(self):
         if not self._dd_items:
             return
+        on_open = getattr(self, "_dd_on_open", None)
+        if on_open:
+            on_open()
         c = self._dd_colors
         top = tk.Toplevel(self)
         top.withdraw()
@@ -1077,8 +1091,8 @@ class Dropdown(tk.Frame):
         lb.pack(side="left", fill="both", expand=True)
         current = self._dd_var.get()
         cur_idx = None
-        for i, (text, header) in enumerate(self._dd_items):
-            lb.insert("end", text if header else "   " + text)
+        for i, (text, header, hint) in enumerate(self._dd_items):
+            lb.insert("end", text if header else "   " + text + (("     " + hint) if hint else ""))
             if header:
                 lb.itemconfigure(i, background=c["card"], foreground=c["muted"],
                                  selectbackground=c["card"], selectforeground=c["muted"])
@@ -1205,7 +1219,7 @@ class Dropdown(tk.Frame):
     def _choose(self, idx):
         if not (0 <= idx < len(self._dd_items)):
             return
-        text, header = self._dd_items[idx]
+        text, header, _hint = self._dd_items[idx]
         if header:
             return
         self._dd_var.set(text)
@@ -1580,18 +1594,23 @@ class App:
         tk.Label(row, text="Quality", bg=self.colors["card"], fg=self.colors["muted"], font=(self.font_family, 9)).pack(side="left")
         self.quality = tk.StringVar(value=QUALITY_BEST)
         self.quality_box = Dropdown(row, self.colors, (self.font_family, 9), variable=self.quality,
-                                    values=[QUALITY_BEST], label_width=18, popup_width=220,
+                                    values=[QUALITY_BEST], label_width=18, popup_width=250,
                                     on_select=lambda v: self.quality_changed())
         self.quality_box.pack(side="left", padx=(5, 10))
+        quality_tips = [Tooltip(w, self.sponsor_tooltip) for w in (self.quality_box, self.quality_box._dd_label, self.quality_box._dd_arrow)]
+        self.quality_box._dd_on_open = lambda: [t._hide() for t in quality_tips]   # no tooltip over the open list
         tk.Label(row, text="Estimated size", bg=self.colors["card"], fg=self.colors["muted"], font=(self.font_family, 9)).pack(side="left", padx=(6, 6))
         self.size_label = tk.Label(row, text="—", bg=self.colors["card"], fg=self.colors["text"], font=(self.font_family, 10, "bold"))
         self.size_label.pack(side="left")
         Tooltip(self.size_label, "Approximate size of the final file. The real size can differ slightly.")
+        self.sponsor_hint = tk.Label(row, text="", bg=self.colors["card"], fg="#d9a441", font=(self.font_family, 8))
+        self.sponsor_hint.pack(side="left", padx=(14, 0))
+        Tooltip(self.sponsor_hint, self.sponsor_tooltip)
+        self.root.after(30000, self._sponsor_tick)
         self.text_button(row, "Open Folder", self.open_download_folder).pack(side="right", padx=(5, 0))
         self.add_btn = self.text_button(row, "Download", self.add_download, accent=True)
         self.add_btn.pack(side="right", padx=(5, 0))
 
-        self.build_ad_strip(self.downloader_page)
 
         queue_card = self.card(self.downloader_page)
         queue_card.pack(fill="both", expand=True)
@@ -1920,6 +1939,76 @@ class App:
 
     def quality_changed(self, _value=None):
         self.update_estimate()
+        self.refresh_sponsor_ui()
+
+    # ---------- sponsored top quality ----------
+    def top_height(self):
+        heights = [f["height"] for f in self.last_formats if f["has_video"] and f.get("height")]
+        return max(heights) if heights else 0
+
+    def is_top_quality(self):
+        """True when the selected video quality is the best this video offers."""
+        if self.mode.get() != "video":
+            return False
+        m = re.match(r"\s*(\d+)", self.quality.get() or "")
+        if not m:
+            return True                      # "Best available"
+        top = self.top_height()
+        return bool(top) and int(m.group(1)) >= top
+
+    def sponsor_due(self):
+        if not AD_URL:
+            return False
+        last = float(self.config.get("last_sponsor_open", 0) or 0)
+        now = time.time()
+        return last > now or now - last >= SPONSOR_COOLDOWN_MIN * 60
+
+    def sponsor_tooltip(self):
+        if not AD_URL or self.mode.get() != "video":
+            return ""
+        mins = SPONSOR_COOLDOWN_MIN
+        if self.is_top_quality():
+            if self.sponsor_due():
+                return ("Top quality is supported by a sponsor.\n"
+                        "When you click Download, a sponsored page opens in your browser\n"
+                        "and your download starts as normal.\n"
+                        f"It opens at most once every {mins} minutes. Choose a lower quality to skip it.")
+            return ("Top quality is supported by a sponsor, but a sponsored page was opened\n"
+                    f"recently, so none will open now (at most once every {mins} minutes).")
+        return ("Lower qualities never open a sponsored page.\n"
+                f"Top quality (marked 'sponsored') opens one at most once every {mins} minutes.")
+
+    def refresh_sponsor_ui(self):
+        try:
+            if not AD_URL or not self.is_top_quality():
+                text = ""
+            elif self.sponsor_due():
+                text = "Sponsored \u00b7 opens an ad page"
+            else:
+                text = "Top quality \u00b7 ad page shown recently"
+            self.sponsor_hint.config(text=text)
+        except (tk.TclError, AttributeError):
+            pass
+
+    def _sponsor_tick(self):
+        self.refresh_sponsor_ui()
+        try:
+            self.root.after(30000, self._sponsor_tick)
+        except tk.TclError:
+            pass
+
+    def open_sponsor_page(self):
+        self.config["last_sponsor_open"] = time.time()
+        try:
+            CONFIG.write_text(json.dumps(self.config, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+        try:
+            webbrowser.open(AD_URL, new=2)
+            self.status_var.set(f"Sponsored page opened - thanks for supporting {APP_NAME}")
+        except Exception:
+            pass
+        self.refresh_sponsor_ui()
 
     @staticmethod
     def _codec_rank(f):
@@ -1968,14 +2057,16 @@ class App:
         mode = self.mode.get()
         if mode == "video":
             heights = sorted({f["height"] for f in self.last_formats if f["has_video"] and f.get("height")}, reverse=True)
-            qvals = [QUALITY_BEST] + [quality_label(h) for h in heights]
+            hint = "\u00b7 sponsored" if AD_URL else ""
+            qvals = [("item", QUALITY_BEST, hint)] + [("item", quality_label(h), hint if i == 0 else "") for i, h in enumerate(heights)]
             self.quality_box.configure(values=qvals)
-            if self.quality.get() not in qvals:
+            if self.quality.get() not in [v[1] for v in qvals]:
                 self.quality.set(QUALITY_BEST)
         else:
             self.quality_box.configure(values=["MP3 / Best audio"])
             self.quality.set("MP3 / Best audio")
         self.update_estimate()
+        self.refresh_sponsor_ui()
 
     def open_download_folder(self):
         folder = str(Path(self.config["download_dir"]))
@@ -2087,24 +2178,6 @@ class App:
             messagebox.showwarning(APP_NAME, "Only HTTP/HTTPS URLs are supported.")
             return
 
-        # Count an actual press of the Download button. The first five downloads
-        # are normal; starting with the sixth, open the Smartlink once and then
-        # repeat it after every five additional download starts (11th, 16th, ...).
-        ad_count = int(self.config.get("smartlink_download_count", 0) or 0) + 1
-        show_smartlink = ad_count > 5 and (ad_count - 6) % 5 == 0
-        if show_smartlink:
-            ad_count = 0
-        self.config["smartlink_download_count"] = ad_count
-        try:
-            CONFIG.write_text(json.dumps(self.config, indent=2), encoding="utf-8")
-        except Exception:
-            pass
-        if show_smartlink and AD_URL:
-            try:
-                webbrowser.open(AD_URL, new=2)
-            except Exception:
-                pass
-
         title = (self.last_info or {}).get("title", "")
         label = "MP3" if self.mode.get() == "audio" else self.quality.get()
         fmt_label, selector = label, ""
@@ -2113,6 +2186,9 @@ class App:
                                est_size=self.estimate_size() or 0.0)
         self.status_var.set(f"Added to download queue ({len(self.manager.jobs)} item{'s' if len(self.manager.jobs) != 1 else ''})")
         self.refresh_jobs()
+        # Top quality is the sponsored option: open the sponsor page (rate-limited), the download runs regardless.
+        if self.mode.get() == "video" and self.is_top_quality() and self.sponsor_due():
+            self.open_sponsor_page()
 
     def refresh_jobs(self):
         # Called from worker threads too, so just schedule one throttled UI refresh.
