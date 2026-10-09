@@ -31,7 +31,7 @@ APP_VERSION = "1.4.0"
 USER_WATERMARK = "KeshavKumar13"
 GITHUB_URL = "https://github.com/KeshavKumar13/"
 # Self-update source: GitHub Releases of this repository. The release must contain an asset named ASSET_NAME.
-UPDATE_REPO = "KeshavKumar13/Reeldock"
+UPDATE_REPO = "KeshavKumar13/Vydora"
 ASSET_NAME = f"{APP_NAME}.exe"
 
 # ---- Sponsored strip (leave AD_URL empty to hide it) ----
