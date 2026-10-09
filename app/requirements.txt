@@ -1,0 +1,3 @@
+yt-dlp>=2026.8.0
+yt-dlp-ejs
+Pillow>=11.0.0

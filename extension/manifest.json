@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "Vydora Companion",
+  "version": "1.0.0",
+  "description": "Send the current page URL to your local Vydora downloader.",
+  "permissions": ["activeTab", "storage", "contextMenus"],
+  "host_permissions": ["http://127.0.0.1:17653/*"],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Send to Vydora"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "options_page": "options.html"
+}

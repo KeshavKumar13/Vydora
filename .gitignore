@@ -1,0 +1,14 @@
+app/.venv/
+app/bin/
+app/build/
+app/dist/
+app/logs/
+app/updates/
+app/assets/app.ico
+app/thumbnail_cache/
+app/__pycache__/
+app/mediafetch.json
+app/history.json
+dist/
+*.exe
+*.part
