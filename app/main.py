@@ -27,7 +27,7 @@ except ImportError:
     ImageTk = None
 
 APP_NAME = "Vydora"
-APP_VERSION = "1.4.1"
+APP_VERSION = "1.4.2"
 USER_WATERMARK = "KeshavKumar13"
 GITHUB_URL = "https://github.com/KeshavKumar13/"
 # Self-update source: GitHub Releases of this repository. The release must contain an asset named ASSET_NAME.
